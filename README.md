@@ -139,3 +139,8 @@ A: 支持Python 3.7及以上版本。
 - 支持基本的图形化打包功能
 - 支持多种打包选项配置
 - 提供示例项目
+### v1.0.1
+- 优先支持 `uv` 创建虚拟环境和安装依赖，无法使用时自动回退到 `python -m venv/pip`
+- 修复 `WinError 2`：避免直接调用 `pip.exe` / `pyinstaller.exe`，改为 `python -m pip` 和 `python -m PyInstaller`
+- 修复打包后点击“开始打包”会反复启动新窗口的问题
+- 增强虚拟环境创建校验和错误日志（创建完成后强校验 `venv_packaging` 中的 Python 是否存在）

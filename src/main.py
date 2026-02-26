@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -261,64 +262,123 @@ class PackagingTool(wx.Frame):
     def create_virtual_env(self):
         """创建虚拟环境"""
         venv_path = os.path.join(self.project_path, "venv_packaging")
+        venv_python = os.path.join(
+            venv_path,
+            "Scripts" if sys.platform == "win32" else "bin",
+            "python.exe" if sys.platform == "win32" else "python",
+        )
 
         if os.path.exists(venv_path):
             self.log("检测到已存在的虚拟环境，正在删除...")
-            import shutil
-
             shutil.rmtree(venv_path)
 
-        self.log("正在创建虚拟环境...")
-        cmd = [sys.executable, "-m", "venv", venv_path]
+        uv_exe = shutil.which("uv")
+        if uv_exe:
+            self.log("正在使用 uv 创建虚拟环境...")
+            # 不强制 --python，避免在打包后把当前 GUI exe 当成解释器再次拉起自身
+            cmd = [uv_exe, "venv", venv_path]
+        else:
+            self.log("未检测到 uv，回退使用 python -m venv 创建虚拟环境...")
+            if getattr(sys, "frozen", False):
+                # 打包后 sys.executable 指向当前程序，不能用于 -m venv
+                python_exe = shutil.which("python")
+                if not python_exe:
+                    py_launcher = shutil.which("py")
+                    if py_launcher:
+                        cmd = [py_launcher, "-m", "venv", venv_path]
+                    else:
+                        self.log("创建虚拟环境失败: 未找到 python/py，请安装 Python 或 uv")
+                        return False
+                else:
+                    cmd = [python_exe, "-m", "venv", venv_path]
+            else:
+                cmd = [sys.executable, "-m", "venv", venv_path]
 
         try:
-            subprocess.run(cmd, check=True, cwd=self.project_path)
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=self.project_path)
+            if not os.path.exists(venv_python):
+                self.log("创建虚拟环境失败: 命令执行完成但未发现虚拟环境 Python")
+                if result.stdout:
+                    self.log(f"标准输出: {result.stdout}")
+                if result.stderr:
+                    self.log(f"错误输出: {result.stderr}")
+                return False
+
             self.log("虚拟环境创建成功")
             return True
+        except FileNotFoundError as e:
+            self.log(f"创建虚拟环境失败，找不到命令: {e}")
+            return False
         except subprocess.CalledProcessError as e:
             self.log(f"创建虚拟环境失败: {e}")
+            if e.stdout:
+                self.log(f"标准输出: {e.stdout}")
+            if e.stderr:
+                self.log(f"错误输出: {e.stderr}")
             return False
 
     def install_dependencies(self):
         """安装依赖"""
         venv_path = os.path.join(self.project_path, "venv_packaging")
 
-        # Windows下的pip路径
+        # 优先通过虚拟环境 Python 调用 pip，避免 pip.exe 缺失导致 WinError 2
         if sys.platform == "win32":
-            pip_path = os.path.join(venv_path, "Scripts", "pip.exe")
+            venv_python = os.path.join(venv_path, "Scripts", "python.exe")
         else:
-            pip_path = os.path.join(venv_path, "bin", "pip")
+            venv_python = os.path.join(venv_path, "bin", "python")
+
+        if not os.path.exists(venv_python):
+            self.log(f"虚拟环境 Python 不存在: {venv_python}")
+            return False
+        uv_exe = shutil.which("uv")
 
         self.log("正在安装依赖...")
-        cmd = [pip_path, "install", "-r", self.requirements_file]
+        if uv_exe:
+            cmd = [uv_exe, "pip", "install", "--python", venv_python, "-r", self.requirements_file]
+        else:
+            cmd = [venv_python, "-m", "pip", "install", "-r", self.requirements_file]
 
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=self.project_path)
             self.log("依赖安装成功")
             self.log("正在安装PyInstaller...")
 
             # 安装PyInstaller
-            cmd_pyinstaller = [pip_path, "install", "pyinstaller"]
-            subprocess.run(cmd_pyinstaller, check=True)
+            if uv_exe:
+                cmd_pyinstaller = [uv_exe, "pip", "install", "--python", venv_python, "pyinstaller"]
+            else:
+                cmd_pyinstaller = [venv_python, "-m", "pip", "install", "pyinstaller"]
+            subprocess.run(cmd_pyinstaller, check=True, capture_output=True, text=True, cwd=self.project_path)
             self.log("PyInstaller安装成功")
             return True
 
+        except FileNotFoundError as e:
+            self.log(f"安装依赖失败，找不到命令: {e}")
+            return False
         except subprocess.CalledProcessError as e:
             self.log(f"安装依赖失败: {e}")
+            if e.stdout:
+                self.log(f"标准输出: {e.stdout}")
+            if e.stderr:
+                self.log(f"错误输出: {e.stderr}")
             return False
 
     def run_pyinstaller(self):
         """运行PyInstaller"""
         venv_path = os.path.join(self.project_path, "venv_packaging")
 
-        # Windows下的pyinstaller路径
+        # 使用虚拟环境 Python 调用 PyInstaller，避免 pyinstaller.exe 缺失
         if sys.platform == "win32":
-            pyinstaller_path = os.path.join(venv_path, "Scripts", "pyinstaller.exe")
+            venv_python = os.path.join(venv_path, "Scripts", "python.exe")
         else:
-            pyinstaller_path = os.path.join(venv_path, "bin", "pyinstaller")
+            venv_python = os.path.join(venv_path, "bin", "python")
+
+        if not os.path.exists(venv_python):
+            self.log(f"虚拟环境 Python 不存在: {venv_python}")
+            return False
 
         # 构建PyInstaller命令
-        cmd = [pyinstaller_path]
+        cmd = [venv_python, "-m", "PyInstaller"]
 
         # 添加选项
         if self.onefile_cb.GetValue():
@@ -363,6 +423,9 @@ class PackagingTool(wx.Frame):
                 self.log(f"标准输出: {e.stdout}")
             if e.stderr:
                 self.log(f"错误输出: {e.stderr}")
+            return False
+        except FileNotFoundError as e:
+            self.log(f"PyInstaller打包失败，找不到命令: {e}")
             return False
 
     def log(self, message):
